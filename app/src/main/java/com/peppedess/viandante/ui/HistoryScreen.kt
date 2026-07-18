@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -100,8 +100,8 @@ fun HistoryScreen(vm: MainViewModel, onBack: () -> Unit) {
             LazyColumn(
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp)
             ) {
-                items(history, key = { it.id }) { visited ->
-                    HistoryCard(visited)
+                itemsIndexed(history, key = { _, item -> item.id }) { index, visited ->
+                    HistoryCard(visited, index)
                 }
             }
         }
@@ -109,14 +109,15 @@ fun HistoryScreen(vm: MainViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun HistoryCard(visited: VisitedPlace) {
+private fun HistoryCard(visited: VisitedPlace, index: Int) {
     val formatter = SimpleDateFormat("d MMMM yyyy \u00B7 HH:mm", Locale.ITALIAN)
     Box(
         Modifier
             .padding(vertical = 8.dp)
             .fillMaxWidth()
-            .height(150.dp)
-            .clip(RoundedCornerShape(24.dp))
+            .height(190.dp)
+            .staggeredEntrance(index)
+            .clip(RoundedCornerShape(28.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         if (visited.imageUrl != null) {

@@ -8,8 +8,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.ExperimentalSharedTransitionApi
-import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,14 +34,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
 import com.peppedess.viandante.ui.HistoryScreen
 import com.peppedess.viandante.ui.HomeScreen
-import com.peppedess.viandante.ui.PoiDetailScreen
 import com.peppedess.viandante.ui.theme.ViandanteTheme
 
 class MainActivity : ComponentActivity() {
@@ -87,37 +82,18 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun AppNav(vm: MainViewModel) {
     val nav = rememberNavController()
-    SharedTransitionLayout {
-        NavHost(navController = nav, startDestination = "home") {
-            composable("home") {
-                HomeScreen(
-                    vm = vm,
-                    onPoiClick = { index -> nav.navigate("poi/$index") },
-                    onHistoryClick = { nav.navigate("history") },
-                    sharedScope = this@SharedTransitionLayout,
-                    animScope = this
-                )
-            }
-            composable(
-                route = "poi/{index}",
-                arguments = listOf(navArgument("index") { type = NavType.IntType })
-            ) { entry ->
-                val index = entry.arguments?.getInt("index") ?: 0
-                PoiDetailScreen(
-                    vm = vm,
-                    index = index,
-                    onBack = { nav.popBackStack() },
-                    sharedScope = this@SharedTransitionLayout,
-                    animScope = this
-                )
-            }
-            composable("history") {
-                HistoryScreen(vm = vm, onBack = { nav.popBackStack() })
-            }
+    NavHost(navController = nav, startDestination = "home") {
+        composable("home") {
+            HomeScreen(
+                vm = vm,
+                onHistoryClick = { nav.navigate("history") }
+            )
+        }
+        composable("history") {
+            HistoryScreen(vm = vm, onBack = { nav.popBackStack() })
         }
     }
 }
