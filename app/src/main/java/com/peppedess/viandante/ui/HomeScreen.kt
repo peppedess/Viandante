@@ -102,12 +102,13 @@ import kotlinx.coroutines.delay
 import java.text.NumberFormat
 import java.util.Locale
 import kotlin.math.PI
-import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.tan
+
+private val InkColor = Color(0xFF1C1B1F)
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -120,14 +121,14 @@ fun HomeScreen(
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(MaterialTheme.colorScheme.surface)
     ) {
         if (state.isFirstLoading) {
             FirstLoading(error = state.error, onRetry = vm::refreshManual)
         } else {
             val pageCount = 1 + state.pois.size
             val pagerState = rememberPagerState(pageCount = { pageCount })
-            var overlayVisible by remember { mutableStateOf(true) }
+            var immersive by remember { mutableStateOf(false) }
             var sheetPage by remember { mutableStateOf<Int?>(null) }
             var mapExpanded by remember { mutableStateOf(false) }
 
@@ -150,15 +151,15 @@ fun HomeScreen(
                     imageUrl = poi?.imageUrl ?: place?.imageUrl,
                     pagerState = pagerState,
                     page = page,
-                    overlayVisible = overlayVisible,
-                    onToggle = { overlayVisible = !overlayVisible },
+                    immersive = immersive,
+                    onToggleImmersive = { immersive = !immersive },
                     onOpenSheet = { sheetPage = page }
                 )
             }
 
-            // Overlay globali: barra alta, meteo, indicatore pagine, progresso
+            // Barra alta: wordmark e azioni su pill bianche
             AnimatedVisibility(
-                visible = overlayVisible,
+                visible = !immersive,
                 enter = fadeIn(),
                 exit = fadeOut(),
                 modifier = Modifier.align(Alignment.TopStart)
@@ -170,31 +171,34 @@ fun HomeScreen(
                         .padding(horizontal = 16.dp, vertical = 10.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "VIANDANTE",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = Color.White.copy(alpha = 0.9f),
-                            letterSpacing = 4.sp
-                        )
+                        Surface(shape = CircleShape, color = Color.White.copy(alpha = 0.92f)) {
+                            Text(
+                                "VIANDANTE",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = InkColor,
+                                letterSpacing = 4.sp,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                            )
+                        }
                         Spacer(Modifier.weight(1f))
-                        GlassIconButton(Icons.Filled.Map, "Mappa") { mapExpanded = true }
+                        WhiteIconButton(Icons.Filled.Map, "Mappa") { mapExpanded = true }
                         Spacer(Modifier.width(8.dp))
-                        GlassIconButton(Icons.Filled.History, "Cronologia", onHistoryClick)
+                        WhiteIconButton(Icons.Filled.History, "Cronologia", onHistoryClick)
                         Spacer(Modifier.width(8.dp))
-                        GlassIconButton(Icons.Filled.Refresh, "Aggiorna", vm::refreshManual)
+                        WhiteIconButton(Icons.Filled.Refresh, "Aggiorna", vm::refreshManual)
                     }
                     state.weather?.let { weather ->
                         Spacer(Modifier.height(10.dp))
                         val (emoji, _) = weatherDescription(weather.weatherCode)
                         Surface(
                             shape = CircleShape,
-                            color = Color.Black.copy(alpha = 0.35f),
+                            color = Color.White.copy(alpha = 0.92f),
                             onClick = { sheetPage = 0 }
                         ) {
                             Text(
                                 "$emoji " + String.format(Locale.ITALIAN, "%.0f\u00B0", weather.temperature),
                                 style = MaterialTheme.typography.titleMedium,
-                                color = Color.White,
+                                color = InkColor,
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                             )
                         }
@@ -203,7 +207,7 @@ fun HomeScreen(
             }
 
             AnimatedVisibility(
-                visible = overlayVisible,
+                visible = !immersive,
                 enter = fadeIn(),
                 exit = fadeOut(),
                 modifier = Modifier.align(Alignment.BottomCenter)
@@ -213,7 +217,7 @@ fun HomeScreen(
                     currentPage = pagerState.currentPage,
                     modifier = Modifier
                         .navigationBarsPadding()
-                        .padding(bottom = 18.dp)
+                        .padding(bottom = 14.dp)
                 )
             }
 
@@ -233,7 +237,7 @@ fun HomeScreen(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
-                        .padding(bottom = 48.dp)
+                        .padding(bottom = 44.dp)
                 ) {
                     Text(
                         error,
@@ -287,147 +291,152 @@ private fun ExplorerPage(
     imageUrl: String?,
     pagerState: PagerState,
     page: Int,
-    overlayVisible: Boolean,
-    onToggle: () -> Unit,
+    immersive: Boolean,
+    onToggleImmersive: () -> Unit,
     onOpenSheet: () -> Unit
 ) {
-    Box(
+    // L'immagine occupa il 60% in alto; con un tap si espande a tutto schermo
+    val imageFraction by animateFloatAsState(
+        targetValue = if (immersive) 1f else 0.60f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioLowBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "imageFraction"
+    )
+    val contentAlpha = ((1f - imageFraction) / 0.4f).coerceIn(0f, 1f)
+
+    Column(
         Modifier
             .fillMaxSize()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onToggle
-            )
+            .background(MaterialTheme.colorScheme.surface)
     ) {
-        // Immagine con parallasse legata al gesto + effetto Ken Burns
-        val infinite = rememberInfiniteTransition(label = "kenburns")
-        val kbScale by infinite.animateFloat(
-            initialValue = 1f,
-            targetValue = 1.12f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 14_000, easing = LinearEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "kbScale"
-        )
-        if (imageUrl != null) {
-            AsyncImage(
-                model = imageUrl,
-                contentDescription = title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        val pageOffset = pagerState.currentPage - page + pagerState.currentPageOffsetFraction
-                        translationX = pageOffset * size.width * 0.3f
-                        scaleX = kbScale
-                        scaleY = kbScale
-                    }
-            )
-        } else {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.tertiary
-                            )
-                        )
-                    )
-            ) {
-                Text(
-                    "\uD83C\uDFDB\uFE0F",
-                    fontSize = 80.sp,
-                    modifier = Modifier.align(Alignment.Center)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .weight(imageFraction)
+                .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onToggleImmersive
                 )
-            }
-        }
-
-        AnimatedVisibility(visible = overlayVisible, enter = fadeIn(), exit = fadeOut()) {
-            Box(Modifier.fillMaxSize()) {
-                // Scrim alto e basso per leggibilit\u00E0
+        ) {
+            val infinite = rememberInfiniteTransition(label = "kenburns")
+            val kbScale by infinite.animateFloat(
+                initialValue = 1.02f,
+                targetValue = 1.12f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 14_000, easing = LinearEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "kbScale"
+            )
+            if (imageUrl != null) {
+                AsyncImage(
+                    model = imageUrl,
+                    contentDescription = title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            val pageOffset = pagerState.currentPage - page + pagerState.currentPageOffsetFraction
+                            translationX = pageOffset * size.width * 0.15f
+                            scaleX = kbScale
+                            scaleY = kbScale
+                        }
+                )
+            } else {
                 Box(
                     Modifier
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                0f to Color.Black.copy(alpha = 0.45f),
-                                0.35f to Color.Transparent,
-                                0.55f to Color.Transparent,
-                                1f to Color.Black.copy(alpha = 0.85f)
+                                listOf(
+                                    MaterialTheme.colorScheme.primaryContainer,
+                                    MaterialTheme.colorScheme.tertiaryContainer
+                                )
                             )
                         )
-                )
-                // Testi che sfumano e scorrono col gesto (parallasse in primo piano)
-                Column(
-                    Modifier
-                        .align(Alignment.BottomStart)
-                        .navigationBarsPadding()
-                        .padding(start = 24.dp, end = 24.dp, bottom = 56.dp)
-                        .graphicsLayer {
-                            val pageOffset = pagerState.currentPage - page + pagerState.currentPageOffsetFraction
-                            alpha = (1f - abs(pageOffset) * 1.6f).coerceIn(0f, 1f)
-                            translationX = pageOffset * size.width * 0.15f
-                        }
                 ) {
+                    Text(
+                        "\uD83C\uDFDB\uFE0F",
+                        fontSize = 80.sp,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+            }
+            // Leggero scrim in basso per staccare la pill
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0.7f to Color.Transparent,
+                            1f to Color.Black.copy(alpha = 0.25f)
+                        )
+                    )
+            )
+            AnimatedVisibility(
+                visible = !immersive,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(16.dp)
+            ) {
+                Surface(shape = CircleShape, color = Color.White.copy(alpha = 0.92f)) {
                     Text(
                         eyebrow,
                         style = MaterialTheme.typography.labelLarge,
-                        color = Color.White.copy(alpha = 0.85f),
-                        letterSpacing = 3.sp
+                        color = InkColor,
+                        letterSpacing = 2.sp,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
                     )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.displayLarge,
-                        color = Color.White,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    description?.let {
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = Color.White.copy(alpha = 0.88f),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Surface(
-                        shape = CircleShape,
-                        color = Color.White.copy(alpha = 0.22f),
-                        onClick = onOpenSheet
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
-                        ) {
-                            Icon(
-                                Icons.Filled.KeyboardArrowUp,
-                                contentDescription = null,
-                                tint = Color.White
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                "Scopri di pi\u00F9",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = Color.White
-                            )
-                        }
-                    }
                 }
             }
+        }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .weight((1f - imageFraction).coerceAtLeast(0.001f))
+                .padding(horizontal = 24.dp)
+                .graphicsLayer { alpha = contentAlpha }
+        ) {
+            Spacer(Modifier.height(20.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.displayMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            description?.let {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Button(
+                onClick = onOpenSheet,
+                modifier = Modifier.height(52.dp)
+            ) {
+                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Scopri di pi\u00F9", style = MaterialTheme.typography.titleMedium)
+            }
+            Spacer(Modifier.height(44.dp))
         }
     }
 }
 
 @Composable
-private fun GlassIconButton(
+private fun WhiteIconButton(
     icon: ImageVector,
     contentDescription: String,
     onClick: () -> Unit
@@ -435,8 +444,8 @@ private fun GlassIconButton(
     IconButton(
         onClick = onClick,
         colors = IconButtonDefaults.iconButtonColors(
-            containerColor = Color.Black.copy(alpha = 0.35f),
-            contentColor = Color.White
+            containerColor = Color.White.copy(alpha = 0.92f),
+            contentColor = InkColor
         )
     ) {
         Icon(icon, contentDescription = contentDescription)
@@ -465,7 +474,10 @@ private fun PageIndicator(pageCount: Int, currentPage: Int, modifier: Modifier =
                     .height(6.dp)
                     .width(width)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = if (selected) 0.95f else 0.4f))
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outlineVariant
+                    )
             )
         }
     }
@@ -613,12 +625,12 @@ private fun FullMapDialog(
         Box(
             Modifier
                 .fillMaxSize()
-                .background(Color.Black)
+                .background(Color.White)
         ) {
             MiniMap(latitude, longitude, zoom = zoom, modifier = Modifier.fillMaxSize())
             Surface(
                 shape = CircleShape,
-                color = Color.Black.copy(alpha = 0.5f),
+                color = Color.White.copy(alpha = 0.94f),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .statusBarsPadding()
@@ -627,12 +639,16 @@ private fun FullMapDialog(
                 Text(
                     placeName,
                     style = MaterialTheme.typography.titleMedium,
-                    color = Color.White,
+                    color = InkColor,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
                 )
             }
             FilledIconButton(
                 onClick = onDismiss,
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = Color.White,
+                    contentColor = InkColor
+                ),
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .statusBarsPadding()
@@ -647,10 +663,22 @@ private fun FullMapDialog(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                FilledIconButton(onClick = { if (zoom < 17) zoom++ }) {
+                FilledIconButton(
+                    onClick = { if (zoom < 17) zoom++ },
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Color.White,
+                        contentColor = InkColor
+                    )
+                ) {
                     Icon(Icons.Filled.Add, contentDescription = "Zoom avanti")
                 }
-                FilledIconButton(onClick = { if (zoom > 10) zoom-- }) {
+                FilledIconButton(
+                    onClick = { if (zoom > 10) zoom-- },
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Color.White,
+                        contentColor = InkColor
+                    )
+                ) {
                     Icon(Icons.Filled.Remove, contentDescription = "Zoom indietro")
                 }
             }
@@ -674,14 +702,14 @@ private fun FirstLoading(error: String?, onRetry: () -> Unit) {
             Text(
                 "Sto scoprendo dove ti trovi\u2026",
                 style = MaterialTheme.typography.headlineSmall,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(8.dp))
             Text(
                 "Un attimo e ti racconto tutto su questo posto.",
                 style = MaterialTheme.typography.bodyLarge,
-                color = Color.White.copy(alpha = 0.7f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
         } else {
@@ -690,7 +718,7 @@ private fun FirstLoading(error: String?, onRetry: () -> Unit) {
             Text(
                 error,
                 style = MaterialTheme.typography.bodyLarge,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(24.dp))
@@ -820,7 +848,7 @@ private fun MapCard(latitude: Double, longitude: Double, onClick: () -> Unit) {
             MiniMap(latitude, longitude, modifier = Modifier.fillMaxSize())
             Surface(
                 shape = CircleShape,
-                color = Color.Black.copy(alpha = 0.45f),
+                color = Color.White.copy(alpha = 0.92f),
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(12.dp)
@@ -828,7 +856,7 @@ private fun MapCard(latitude: Double, longitude: Double, onClick: () -> Unit) {
                 Text(
                     "Tocca per espandere",
                     style = MaterialTheme.typography.labelMedium,
-                    color = Color.White,
+                    color = InkColor,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                 )
             }
