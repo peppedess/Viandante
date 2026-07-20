@@ -377,23 +377,26 @@ private fun ExplorerPage(
                         )
                     )
             )
-            AnimatedVisibility(
-                visible = !immersive,
-                enter = fadeIn(),
-                exit = fadeOut(),
+            val pillAlpha by animateFloatAsState(
+                targetValue = if (immersive) 0f else 1f,
+                animationSpec = tween(durationMillis = 250),
+                label = "pillAlpha"
+            )
+            Surface(
+                shape = CircleShape,
+                color = Color.White.copy(alpha = 0.92f),
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(16.dp)
+                    .graphicsLayer { alpha = pillAlpha }
             ) {
-                Surface(shape = CircleShape, color = Color.White.copy(alpha = 0.92f)) {
-                    Text(
-                        eyebrow,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = InkColor,
-                        letterSpacing = 2.sp,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
-                    )
-                }
+                Text(
+                    eyebrow,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = InkColor,
+                    letterSpacing = 2.sp,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                )
             }
         }
         Column(
