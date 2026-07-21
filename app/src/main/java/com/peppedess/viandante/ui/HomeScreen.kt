@@ -1,8 +1,10 @@
 package com.peppedess.viandante.ui
 
 import android.content.Intent
+import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -16,13 +18,16 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -33,6 +38,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
@@ -48,6 +54,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Button
@@ -58,7 +65,6 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.LoadingIndicator
@@ -78,13 +84,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -93,15 +104,29 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import coil.imageLoader
+import coil.request.ImageRequest
+import androidx.palette.graphics.Palette
 import com.peppedess.viandante.MainViewModel
+import com.peppedess.viandante.data.MotionState
 import com.peppedess.viandante.data.PlaceInfo
 import com.peppedess.viandante.data.Poi
 import com.peppedess.viandante.data.WeatherInfo
+import com.peppedess.viandante.data.angleDelta
+import com.peppedess.viandante.data.bearingBetween
+import com.peppedess.viandante.data.distanceMeters
+import com.peppedess.viandante.data.formatDistance
+import com.peppedess.viandante.data.sideArrow
+import com.peppedess.viandante.data.sideLabel
+import com.peppedess.viandante.data.weatherAdvice
 import com.peppedess.viandante.data.weatherDescription
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.text.NumberFormat
 import java.util.Locale
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
@@ -110,6 +135,16 @@ import kotlin.math.tan
 
 private val InkColor = Color(0xFF1C1B1F)
 
+/** Chip informativo proattivo mostrato nell'area contenuti. */
+data class InsightChip(
+    val emoji: String,
+    val text: String,
+    val highlighted: Boolean = false,
+    val onClick: (() -> Unit)? = null
+)
+
+private data class Approach(val index: Int, val poi: Poi, val delta: Float, val dist: Float)
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -117,6 +152,7 @@ fun HomeScreen(
     onHistoryClick: () -> Unit
 ) {
     val state by vm.state.collectAsState()
+    val haptic = LocalHapticFeedback.current
 
     Box(
         Modifier
@@ -132,8 +168,21 @@ fun HomeScreen(
             var sheetPage by remember { mutableStateOf<Int?>(null) }
             var mapExpanded by remember { mutableStateOf(false) }
 
-            LaunchedEffect(state.place?.name) {
-                pagerState.scrollToPage(0)
+            LaunchedEffect(state.place?.name) { pagerState.scrollToPage(0) }
+            LaunchedEffect(pagerState.settledPage) {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            }
+
+            // POI in arrivo lungo la direzione di marcia
+            val approaching: Approach? = run {
+                val h = state.headingDeg
+                val la = state.curLat
+                val lo = state.curLon
+                if (h == null || la == null || lo == null || state.motion == MotionState.STILL) null
+                else state.pois.mapIndexed { i, p ->
+                    Approach(i, p, angleDelta(h, bearingBetween(la, lo, p.latitude, p.longitude)),
+                        distanceMeters(la, lo, p.latitude, p.longitude))
+                }.filter { abs(it.delta) < 55f }.minByOrNull { it.dist }
             }
 
             HorizontalPager(
@@ -143,21 +192,36 @@ fun HomeScreen(
             ) { page ->
                 val poi = if (page == 0) null else state.pois.getOrNull(page - 1)
                 val place = state.place
+
+                val chips: List<InsightChip> = if (poi == null) {
+                    buildPlaceChips(state, approaching) { idx -> sheetPage = idx + 1 }
+                } else {
+                    buildPoiChips(state, poi)
+                }
+
                 ExplorerPage(
                     eyebrow = if (poi == null) "STAI ATTRAVERSANDO"
                     else "A ${formatDistance(poi.distanceMeters).uppercase(Locale.ITALIAN)} DA TE",
                     title = poi?.title ?: place?.name ?: "\u2026",
+                    subtitle = if (poi == null) place?.region else null,
                     description = poi?.description ?: place?.description,
                     imageUrl = poi?.imageUrl ?: place?.imageUrl,
+                    chips = chips,
                     pagerState = pagerState,
                     page = page,
                     immersive = immersive,
-                    onToggleImmersive = { immersive = !immersive },
-                    onOpenSheet = { sheetPage = page }
+                    onToggleImmersive = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        immersive = !immersive
+                    },
+                    onOpenSheet = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        sheetPage = page
+                    }
                 )
             }
 
-            // Barra alta: wordmark e azioni su pill bianche
+            // Barra alta con pill vetrose
             AnimatedVisibility(
                 visible = !immersive,
                 enter = fadeIn(),
@@ -171,35 +235,29 @@ fun HomeScreen(
                         .padding(horizontal = 16.dp, vertical = 10.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(shape = CircleShape, color = Color.White.copy(alpha = 0.92f)) {
+                        GlassPill {
                             Text(
                                 "VIANDANTE",
                                 style = MaterialTheme.typography.labelLarge,
                                 color = InkColor,
-                                letterSpacing = 4.sp,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                                letterSpacing = 4.sp
                             )
                         }
                         Spacer(Modifier.weight(1f))
-                        WhiteIconButton(Icons.Filled.Map, "Mappa") { mapExpanded = true }
+                        GlassIconButton(Icons.Filled.Map, "Mappa") { mapExpanded = true }
                         Spacer(Modifier.width(8.dp))
-                        WhiteIconButton(Icons.Filled.History, "Cronologia", onHistoryClick)
+                        GlassIconButton(Icons.Filled.History, "Cronologia", onHistoryClick)
                         Spacer(Modifier.width(8.dp))
-                        WhiteIconButton(Icons.Filled.Refresh, "Aggiorna", vm::refreshManual)
+                        GlassIconButton(Icons.Filled.Refresh, "Aggiorna", vm::refreshManual)
                     }
                     state.weather?.let { weather ->
                         Spacer(Modifier.height(10.dp))
                         val (emoji, _) = weatherDescription(weather.weatherCode)
-                        Surface(
-                            shape = CircleShape,
-                            color = Color.White.copy(alpha = 0.92f),
-                            onClick = { sheetPage = 0 }
-                        ) {
+                        GlassPill(onClick = { sheetPage = 0 }) {
                             Text(
                                 "$emoji " + String.format(Locale.ITALIAN, "%.0f\u00B0", weather.temperature),
                                 style = MaterialTheme.typography.titleMedium,
-                                color = InkColor,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                                color = InkColor
                             )
                         }
                     }
@@ -248,7 +306,6 @@ fun HomeScreen(
                 }
             }
 
-            // Bottom sheet con i dettagli del luogo o del POI
             sheetPage?.let { page ->
                 val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
                 ModalBottomSheet(
@@ -261,20 +318,18 @@ fun HomeScreen(
                             PlaceSheet(place, state.weather) { mapExpanded = true }
                         }
                     } else {
-                        state.pois.getOrNull(page - 1)?.let { poi ->
-                            PoiSheet(poi)
-                        }
+                        state.pois.getOrNull(page - 1)?.let { poi -> PoiSheet(poi) }
                     }
                 }
             }
 
-            // Mappa a tutto schermo con zoom
             if (mapExpanded) {
                 state.place?.let { place ->
                     FullMapDialog(
                         latitude = place.latitude,
                         longitude = place.longitude,
                         placeName = place.name,
+                        heading = state.headingDeg,
                         onDismiss = { mapExpanded = false }
                     )
                 }
@@ -283,28 +338,118 @@ fun HomeScreen(
     }
 }
 
+private fun buildPlaceChips(
+    state: com.peppedess.viandante.data.UiState,
+    approaching: Approach?,
+    onApproachClick: (Int) -> Unit
+): List<InsightChip> = buildList {
+    if (state.motion != MotionState.STILL) {
+        add(InsightChip(state.motion.emoji, "${state.speedKmh.roundToInt()} km/h \u00B7 ${state.motion.label}"))
+    }
+    approaching?.let { ap ->
+        add(
+            InsightChip(
+                sideArrow(ap.delta),
+                "${ap.poi.title} \u00B7 ${sideLabel(ap.delta)}",
+                highlighted = true,
+                onClick = { onApproachClick(ap.index) }
+            )
+        )
+    }
+    state.weather?.sunsetMillis?.let { sunset ->
+        val minutes = ((sunset - System.currentTimeMillis()) / 60_000L).toInt()
+        if (minutes in 1..90) {
+            val golden = minutes <= 60
+            add(
+                InsightChip(
+                    if (golden) "\uD83C\uDF07" else "\uD83C\uDF05",
+                    if (golden) "Ora d'oro \u00B7 tramonto tra ${minutes}\u2032"
+                    else "Tramonto tra ${minutes}\u2032"
+                )
+            )
+        }
+    }
+    weatherAdvice(state.weather)?.let { (emoji, text) ->
+        add(InsightChip(emoji, text))
+    }
+}
+
+private fun buildPoiChips(
+    state: com.peppedess.viandante.data.UiState,
+    poi: Poi
+): List<InsightChip> = buildList {
+    val h = state.headingDeg
+    val la = state.curLat
+    val lo = state.curLon
+    if (h != null && la != null && lo != null && state.motion != MotionState.STILL) {
+        val delta = angleDelta(h, bearingBetween(la, lo, poi.latitude, poi.longitude))
+        if (abs(delta) < 70f) {
+            add(InsightChip(sideArrow(delta), sideLabel(delta), highlighted = true))
+        }
+    }
+}
+
+@Composable
+private fun rememberAccent(imageUrl: String?): Color {
+    val context = LocalContext.current
+    val fallback = MaterialTheme.colorScheme.primary
+    var target by remember(imageUrl) { mutableStateOf(fallback) }
+    LaunchedEffect(imageUrl) {
+        if (imageUrl == null) {
+            target = fallback
+            return@LaunchedEffect
+        }
+        try {
+            val result = context.imageLoader.execute(
+                ImageRequest.Builder(context)
+                    .data(imageUrl)
+                    .allowHardware(false)
+                    .size(128)
+                    .build()
+            )
+            val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
+            if (bitmap != null) {
+                val rgb = withContext(Dispatchers.Default) {
+                    val palette = Palette.from(bitmap).generate()
+                    palette.vibrantSwatch?.rgb
+                        ?: palette.dominantSwatch?.rgb
+                        ?: palette.mutedSwatch?.rgb
+                }
+                if (rgb != null) target = Color(rgb)
+            }
+        } catch (e: Exception) {
+            // Mantieni il fallback
+        }
+    }
+    val animated by animateColorAsState(targetValue = target, animationSpec = tween(600), label = "accent")
+    return animated
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ExplorerPage(
     eyebrow: String,
     title: String,
+    subtitle: String?,
     description: String?,
     imageUrl: String?,
+    chips: List<InsightChip>,
     pagerState: PagerState,
     page: Int,
     immersive: Boolean,
     onToggleImmersive: () -> Unit,
     onOpenSheet: () -> Unit
 ) {
-    // L'immagine occupa il 60% in alto; con un tap si espande a tutto schermo
+    val accent = rememberAccent(imageUrl)
     val imageFraction by animateFloatAsState(
-        targetValue = if (immersive) 1f else 0.60f,
+        targetValue = if (immersive) 1f else 0.56f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioLowBouncy,
             stiffness = Spring.StiffnessMediumLow
         ),
         label = "imageFraction"
     )
-    val contentAlpha = ((1f - imageFraction) / 0.4f).coerceIn(0f, 1f)
+    val contentAlpha = ((1f - imageFraction) / 0.44f).coerceIn(0f, 1f)
 
     Column(
         Modifier
@@ -315,7 +460,7 @@ private fun ExplorerPage(
             Modifier
                 .fillMaxWidth()
                 .weight(imageFraction)
-                .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+                .clip(RoundedCornerShape(bottomStart = 34.dp, bottomEnd = 34.dp))
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -324,10 +469,10 @@ private fun ExplorerPage(
         ) {
             val infinite = rememberInfiniteTransition(label = "kenburns")
             val kbScale by infinite.animateFloat(
-                initialValue = 1.02f,
-                targetValue = 1.12f,
+                initialValue = 1.03f,
+                targetValue = 1.14f,
                 animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 14_000, easing = LinearEasing),
+                    animation = tween(durationMillis = 16_000, easing = LinearEasing),
                     repeatMode = RepeatMode.Reverse
                 ),
                 label = "kbScale"
@@ -341,9 +486,10 @@ private fun ExplorerPage(
                         .fillMaxSize()
                         .graphicsLayer {
                             val pageOffset = pagerState.currentPage - page + pagerState.currentPageOffsetFraction
-                            translationX = pageOffset * size.width * 0.15f
-                            scaleX = kbScale
-                            scaleY = kbScale
+                            val depth = 1f - 0.06f * abs(pageOffset).coerceIn(0f, 1f)
+                            translationX = pageOffset * size.width * 0.16f
+                            scaleX = kbScale * depth
+                            scaleY = kbScale * depth
                         }
                 )
             } else {
@@ -352,61 +498,55 @@ private fun ExplorerPage(
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                listOf(
-                                    MaterialTheme.colorScheme.primaryContainer,
-                                    MaterialTheme.colorScheme.tertiaryContainer
-                                )
+                                listOf(accent.copy(alpha = 0.55f), accent.copy(alpha = 0.9f))
                             )
                         )
                 ) {
-                    Text(
-                        "\uD83C\uDFDB\uFE0F",
-                        fontSize = 80.sp,
-                        modifier = Modifier.align(Alignment.Center)
-                    )
+                    Text("\uD83C\uDFDB\uFE0F", fontSize = 80.sp, modifier = Modifier.align(Alignment.Center))
                 }
             }
-            // Leggero scrim in basso per staccare la pill
+            // Velo d'accento in basso, per continuit\u00E0 cromatica con l'area bianca
             Box(
                 Modifier
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
-                            0.7f to Color.Transparent,
-                            1f to Color.Black.copy(alpha = 0.25f)
+                            0.55f to Color.Transparent,
+                            1f to accent.copy(alpha = 0.28f)
                         )
                     )
             )
             val pillAlpha by animateFloatAsState(
                 targetValue = if (immersive) 0f else 1f,
-                animationSpec = tween(durationMillis = 250),
+                animationSpec = tween(250),
                 label = "pillAlpha"
             )
-            Surface(
-                shape = CircleShape,
-                color = Color.White.copy(alpha = 0.92f),
-                modifier = Modifier
+            Box(
+                Modifier
                     .align(Alignment.BottomStart)
                     .padding(16.dp)
                     .graphicsLayer { alpha = pillAlpha }
             ) {
-                Text(
-                    eyebrow,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = InkColor,
-                    letterSpacing = 2.sp,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
-                )
+                GlassPill {
+                    Text(
+                        eyebrow,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = InkColor,
+                        letterSpacing = 2.sp
+                    )
+                }
             }
         }
+
         Column(
             Modifier
                 .fillMaxWidth()
                 .weight((1f - imageFraction).coerceAtLeast(0.001f))
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp)
                 .graphicsLayer { alpha = contentAlpha }
         ) {
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(18.dp))
             Text(
                 title,
                 style = MaterialTheme.typography.displayMedium,
@@ -414,44 +554,122 @@ private fun ExplorerPage(
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis
             )
-            description?.let {
-                Spacer(Modifier.height(10.dp))
+            subtitle?.let {
+                Spacer(Modifier.height(2.dp))
                 Text(
                     it,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = accent,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Spacer(Modifier.weight(1f))
-            Button(
+            if (chips.isNotEmpty()) {
+                Spacer(Modifier.height(14.dp))
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    chips.forEach { chip -> InsightChipView(chip, accent) }
+                }
+            }
+            description?.let {
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyLarge,
+                    lineHeight = 25.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.height(18.dp))
+            val onAccent = if (accent.luminance() > 0.5f) InkColor else Color.White
+            Surface(
                 onClick = onOpenSheet,
+                shape = CircleShape,
+                color = accent,
+                shadowElevation = 3.dp,
                 modifier = Modifier.height(52.dp)
             ) {
-                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Scopri di pi\u00F9", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 24.dp)
+                ) {
+                    Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null, tint = onAccent)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Scopri di pi\u00F9", style = MaterialTheme.typography.titleMedium, color = onAccent)
+                }
             }
-            Spacer(Modifier.height(44.dp))
+            Spacer(Modifier.height(40.dp))
         }
     }
 }
 
 @Composable
-private fun WhiteIconButton(
+private fun GlassPill(
+    onClick: (() -> Unit)? = null,
+    bg: Color = Color.White.copy(alpha = 0.9f),
+    content: @Composable RowScope.() -> Unit
+) {
+    val base = Modifier
+        .shadow(6.dp, CircleShape, clip = false)
+        .clip(CircleShape)
+        .background(bg)
+        .border(1.dp, Color.White.copy(alpha = 0.45f), CircleShape)
+    val modifier = if (onClick != null) base.clickable(onClick = onClick) else base
+    Row(
+        modifier = modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        content = content
+    )
+}
+
+@Composable
+private fun InsightChipView(chip: InsightChip, accent: Color) {
+    val bg = if (chip.highlighted) accent.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceContainerHigh
+    val base = Modifier
+        .clip(CircleShape)
+        .background(bg)
+        .then(
+            if (chip.highlighted) Modifier.border(1.dp, accent.copy(alpha = 0.5f), CircleShape)
+            else Modifier
+        )
+    val modifier = if (chip.onClick != null) base.clickable(onClick = chip.onClick) else base
+    Row(
+        modifier = modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(chip.emoji, fontSize = 15.sp)
+        Spacer(Modifier.width(7.dp))
+        Text(
+            chip.text,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 230.dp)
+        )
+    }
+}
+
+@Composable
+private fun GlassIconButton(
     icon: ImageVector,
     contentDescription: String,
     onClick: () -> Unit
 ) {
-    IconButton(
-        onClick = onClick,
-        colors = IconButtonDefaults.iconButtonColors(
-            containerColor = Color.White.copy(alpha = 0.92f),
-            contentColor = InkColor
-        )
+    Box(
+        Modifier
+            .shadow(6.dp, CircleShape, clip = false)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.9f))
+            .border(1.dp, Color.White.copy(alpha = 0.45f), CircleShape)
+            .clickable(onClick = onClick)
+            .padding(10.dp)
     ) {
-        Icon(icon, contentDescription = contentDescription)
+        Icon(icon, contentDescription = contentDescription, tint = InkColor)
     }
 }
 
@@ -528,13 +746,7 @@ private fun PlaceSheet(place: PlaceInfo, weather: WeatherInfo?, onMapClick: () -
         place.pageUrl?.let { url ->
             Spacer(Modifier.height(20.dp))
             FilledTonalButton(
-                onClick = {
-                    try {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                    } catch (e: Exception) {
-                        // Nessun browser disponibile
-                    }
-                },
+                onClick = { openUrl(context, url) },
                 modifier = Modifier
                     .padding(horizontal = 24.dp)
                     .height(52.dp)
@@ -555,10 +767,7 @@ private fun PoiSheet(poi: Poi) {
             .padding(horizontal = 24.dp)
             .padding(bottom = 24.dp)
     ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.secondaryContainer
-        ) {
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) {
             Text(
                 "a ${formatDistance(poi.distanceMeters)} da te",
                 style = MaterialTheme.typography.labelLarge,
@@ -579,10 +788,10 @@ private fun PoiSheet(poi: Poi) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = {
+                    val uri = Uri.parse(
+                        "geo:${poi.latitude},${poi.longitude}?q=${poi.latitude},${poi.longitude}(${Uri.encode(poi.title)})"
+                    )
                     try {
-                        val uri = Uri.parse(
-                            "geo:${poi.latitude},${poi.longitude}?q=${poi.latitude},${poi.longitude}(${Uri.encode(poi.title)})"
-                        )
                         context.startActivity(Intent(Intent.ACTION_VIEW, uri))
                     } catch (e: Exception) {
                         // Nessuna app di mappe disponibile
@@ -595,16 +804,7 @@ private fun PoiSheet(poi: Poi) {
                 Text("Portami qui")
             }
             poi.pageUrl?.let { url ->
-                FilledTonalButton(
-                    onClick = {
-                        try {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                        } catch (e: Exception) {
-                            // Nessun browser disponibile
-                        }
-                    },
-                    modifier = Modifier.height(52.dp)
-                ) {
+                FilledTonalButton(onClick = { openUrl(context, url) }, modifier = Modifier.height(52.dp)) {
                     Text("Wikipedia")
                 }
             }
@@ -613,11 +813,20 @@ private fun PoiSheet(poi: Poi) {
     }
 }
 
+private fun openUrl(context: android.content.Context, url: String) {
+    try {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    } catch (e: Exception) {
+        // Nessun browser disponibile
+    }
+}
+
 @Composable
 private fun FullMapDialog(
     latitude: Double,
     longitude: Double,
     placeName: String,
+    heading: Float?,
     onDismiss: () -> Unit
 ) {
     var zoom by remember { mutableStateOf(13) }
@@ -630,27 +839,21 @@ private fun FullMapDialog(
                 .fillMaxSize()
                 .background(Color.White)
         ) {
-            MiniMap(latitude, longitude, zoom = zoom, modifier = Modifier.fillMaxSize())
-            Surface(
-                shape = CircleShape,
-                color = Color.White.copy(alpha = 0.94f),
-                modifier = Modifier
+            MiniMap(latitude, longitude, zoom = zoom, heading = heading, modifier = Modifier.fillMaxSize())
+            Box(
+                Modifier
                     .align(Alignment.TopCenter)
                     .statusBarsPadding()
                     .padding(top = 12.dp)
             ) {
-                Text(
-                    placeName,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = InkColor,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
-                )
+                GlassPill {
+                    Text(placeName, style = MaterialTheme.typography.titleMedium, color = InkColor)
+                }
             }
             FilledIconButton(
                 onClick = onDismiss,
                 colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = Color.White,
-                    contentColor = InkColor
+                    containerColor = Color.White, contentColor = InkColor
                 ),
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -669,21 +872,15 @@ private fun FullMapDialog(
                 FilledIconButton(
                     onClick = { if (zoom < 17) zoom++ },
                     colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = Color.White,
-                        contentColor = InkColor
+                        containerColor = Color.White, contentColor = InkColor
                     )
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = "Zoom avanti")
-                }
+                ) { Icon(Icons.Filled.Add, contentDescription = "Zoom avanti") }
                 FilledIconButton(
                     onClick = { if (zoom > 10) zoom-- },
                     colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = Color.White,
-                        contentColor = InkColor
+                        containerColor = Color.White, contentColor = InkColor
                     )
-                ) {
-                    Icon(Icons.Filled.Remove, contentDescription = "Zoom indietro")
-                }
+                ) { Icon(Icons.Filled.Remove, contentDescription = "Zoom indietro") }
             }
         }
     }
@@ -692,40 +889,64 @@ private fun FullMapDialog(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun FirstLoading(error: String?, onRetry: () -> Unit) {
-    Column(
-        modifier = Modifier
+    // Sfondo a gradiente animato per un tocco moderno
+    val infinite = rememberInfiniteTransition(label = "loadingBg")
+    val shift by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(6_000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "shift"
+    )
+    val c1 = MaterialTheme.colorScheme.primaryContainer
+    val c2 = MaterialTheme.colorScheme.tertiaryContainer
+    Box(
+        Modifier
             .fillMaxSize()
-            .padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(c1, c2),
+                    start = androidx.compose.ui.geometry.Offset(shift * 600f, 0f),
+                    end = androidx.compose.ui.geometry.Offset(600f + shift * 400f, 1400f)
+                )
+            )
     ) {
-        if (error == null) {
-            LoadingIndicator(modifier = Modifier.size(72.dp))
-            Spacer(Modifier.height(24.dp))
-            Text(
-                "Sto scoprendo dove ti trovi\u2026",
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Un attimo e ti racconto tutto su questo posto.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-        } else {
-            Text("\uD83D\uDE15", fontSize = 56.sp)
-            Spacer(Modifier.height(16.dp))
-            Text(
-                error,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center
-            )
-            Spacer(Modifier.height(24.dp))
-            Button(onClick = onRetry) { Text("Riprova") }
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            if (error == null) {
+                LoadingIndicator(modifier = Modifier.size(72.dp))
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    "Sto scoprendo dove ti trovi\u2026",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Un attimo e ti racconto tutto su questo posto.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            } else {
+                Text("\uD83D\uDE15", fontSize = 56.sp)
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(24.dp))
+                Button(onClick = onRetry) { Text("Riprova") }
+            }
         }
     }
 }
@@ -742,10 +963,7 @@ fun WeatherCard(weather: WeatherInfo) {
             .padding(top = 16.dp)
             .fillMaxWidth()
     ) {
-        Row(
-            Modifier.padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(emoji, fontSize = 52.sp)
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
@@ -786,24 +1004,14 @@ fun TechInfoRow(place: PlaceInfo) {
             .fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        StatTile("\u26F0\uFE0F", place.elevation?.let { "$it m" } ?: "\u2014", "Altitudine", Modifier.weight(1f))
         StatTile(
-            emoji = "\u26F0\uFE0F",
-            value = place.elevation?.let { "$it m" } ?: "\u2014",
-            label = "Altitudine",
-            modifier = Modifier.weight(1f)
+            "\uD83D\uDC65",
+            place.population?.let { NumberFormat.getInstance(Locale.ITALIAN).format(it) } ?: "\u2014",
+            "Abitanti",
+            Modifier.weight(1f)
         )
-        StatTile(
-            emoji = "\uD83D\uDC65",
-            value = place.population?.let { NumberFormat.getInstance(Locale.ITALIAN).format(it) } ?: "\u2014",
-            label = "Abitanti",
-            modifier = Modifier.weight(1f)
-        )
-        StatTile(
-            emoji = "\uD83D\uDCCD",
-            value = place.province ?: place.region ?: "\u2014",
-            label = "Provincia",
-            modifier = Modifier.weight(1f)
-        )
+        StatTile("\uD83D\uDCCD", place.province ?: place.region ?: "\u2014", "Provincia", Modifier.weight(1f))
     }
 }
 
@@ -814,23 +1022,11 @@ private fun StatTile(emoji: String, value: String, label: String, modifier: Modi
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
         modifier = modifier
     ) {
-        Column(
-            Modifier.padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
+        Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(emoji, fontSize = 24.sp)
             Spacer(Modifier.height(6.dp))
-            Text(
-                value,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Text(value, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -849,19 +1045,10 @@ private fun MapCard(latitude: Double, longitude: Double, onClick: () -> Unit) {
     ) {
         Box(Modifier.fillMaxSize()) {
             MiniMap(latitude, longitude, modifier = Modifier.fillMaxSize())
-            Surface(
-                shape = CircleShape,
-                color = Color.White.copy(alpha = 0.92f),
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(12.dp)
-            ) {
-                Text(
-                    "Tocca per espandere",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = InkColor,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                )
+            Box(Modifier.align(Alignment.BottomEnd).padding(12.dp)) {
+                GlassPill {
+                    Text("Tocca per espandere", style = MaterialTheme.typography.labelMedium, color = InkColor)
+                }
             }
         }
     }
@@ -872,6 +1059,7 @@ fun MiniMap(
     latitude: Double,
     longitude: Double,
     zoom: Int = 13,
+    heading: Float? = null,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier.clipToBounds()) {
@@ -902,15 +1090,27 @@ fun MiniMap(
                 )
             }
         }
-        Icon(
-            Icons.Filled.LocationOn,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier
-                .size(44.dp)
-                .align(Alignment.Center)
-                .offset(y = (-18).dp)
-        )
+        if (heading != null) {
+            Icon(
+                Icons.Filled.Navigation,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .size(40.dp)
+                    .align(Alignment.Center)
+                    .rotate(heading)
+            )
+        } else {
+            Icon(
+                Icons.Filled.LocationOn,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .size(44.dp)
+                    .align(Alignment.Center)
+                    .offset(y = (-18).dp)
+            )
+        }
     }
 }
 
@@ -939,7 +1139,3 @@ fun Modifier.staggeredEntrance(index: Int): Modifier {
         translationY = translation
     }
 }
-
-fun formatDistance(meters: Int): String =
-    if (meters < 1000) "$meters m"
-    else String.format(Locale.ITALIAN, "%.1f km", meters / 1000.0)

@@ -18,6 +18,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.peppedess.viandante.MainViewModel
 import com.peppedess.viandante.data.VisitedPlace
+import com.peppedess.viandante.data.distanceMeters
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -84,10 +88,7 @@ fun HistoryScreen(vm: MainViewModel, onBack: () -> Unit) {
             ) {
                 Text("\uD83E\uDDF3", fontSize = 64.sp)
                 Spacer(Modifier.height(16.dp))
-                Text(
-                    "Nessun viaggio registrato",
-                    style = MaterialTheme.typography.headlineSmall
-                )
+                Text("Nessun viaggio registrato", style = MaterialTheme.typography.headlineSmall)
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "Muoviti in treno o in macchina e qui troverai tutti i luoghi che hai attraversato.",
@@ -100,11 +101,61 @@ fun HistoryScreen(vm: MainViewModel, onBack: () -> Unit) {
             LazyColumn(
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp)
             ) {
+                item { JourneyStats(history) }
                 itemsIndexed(history, key = { _, item -> item.id }) { index, visited ->
                     HistoryCard(visited, index)
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun JourneyStats(history: List<VisitedPlace>) {
+    val totalKm = remember(history) {
+        var meters = 0f
+        for (i in 0 until history.size - 1) {
+            meters += distanceMeters(
+                history[i].latitude, history[i].longitude,
+                history[i + 1].latitude, history[i + 1].longitude
+            )
+        }
+        (meters / 1000f).toInt()
+    }
+    val regions = remember(history) { history.mapNotNull { it.region }.distinct().size }
+
+    Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+    ) {
+        Row(
+            Modifier.padding(vertical = 20.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            StatCell("${history.size}", "tappe")
+            StatCell("~$totalKm", "km percorsi")
+            StatCell("$regions", if (regions == 1) "regione" else "regioni")
+        }
+    }
+}
+
+@Composable
+private fun StatCell(value: String, label: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            value,
+            style = MaterialTheme.typography.headlineMedium,
+            color = MaterialTheme.colorScheme.onPrimaryContainer
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onPrimaryContainer
+        )
     }
 }
 

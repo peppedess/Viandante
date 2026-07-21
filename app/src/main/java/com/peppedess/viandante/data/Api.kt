@@ -11,6 +11,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.LocalDateTime
+import java.time.ZoneId
 import java.util.Locale
 import kotlin.coroutines.resume
 
@@ -115,15 +117,20 @@ object OpenMeteoApi {
             val json = Http.getJson(
                 "https://api.open-meteo.com/v1/forecast?latitude=$latitude&longitude=$longitude" +
                     "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m" +
-                    "&timezone=auto"
+                    "&daily=sunrise,sunset&timezone=auto"
             )
             val current = json.getJSONObject("current")
+            val daily = json.optJSONObject("daily")
+            val sunrise = daily?.optJSONArray("sunrise")?.optString(0)?.let { parseLocalMillis(it) }
+            val sunset = daily?.optJSONArray("sunset")?.optString(0)?.let { parseLocalMillis(it) }
             WeatherInfo(
                 temperature = current.getDouble("temperature_2m"),
                 apparentTemperature = if (current.has("apparent_temperature")) current.getDouble("apparent_temperature") else null,
                 weatherCode = current.optInt("weather_code", 0),
                 windSpeedKmh = current.optDouble("wind_speed_10m", 0.0),
-                humidityPercent = if (current.has("relative_humidity_2m")) current.getInt("relative_humidity_2m") else null
+                humidityPercent = if (current.has("relative_humidity_2m")) current.getInt("relative_humidity_2m") else null,
+                sunriseMillis = sunrise,
+                sunsetMillis = sunset
             )
         } catch (e: Exception) {
             null
@@ -138,6 +145,12 @@ object OpenMeteoApi {
         } catch (e: Exception) {
             null
         }
+    }
+
+    private fun parseLocalMillis(iso: String): Long? = try {
+        LocalDateTime.parse(iso).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    } catch (e: Exception) {
+        null
     }
 }
 

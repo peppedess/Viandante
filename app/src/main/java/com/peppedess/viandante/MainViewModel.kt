@@ -6,13 +6,20 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.peppedess.viandante.data.AppDatabase
 import com.peppedess.viandante.data.LocationClient
+import com.peppedess.viandante.data.MotionState
 import com.peppedess.viandante.data.OpenMeteoApi
 import com.peppedess.viandante.data.PlaceInfo
 import com.peppedess.viandante.data.Poi
 import com.peppedess.viandante.data.UiState
 import com.peppedess.viandante.data.VisitedPlace
 import com.peppedess.viandante.data.WikipediaApi
+import com.peppedess.viandante.data.angleDelta
+import com.peppedess.viandante.data.bearingBetween
+import com.peppedess.viandante.data.distanceMeters
+import com.peppedess.viandante.data.formatDistance
+import com.peppedess.viandante.data.motionFrom
 import com.peppedess.viandante.data.reverseGeocode
+import com.peppedess.viandante.data.sideLabel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -24,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -37,10 +45,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var trackingJob: Job? = null
     private var refreshJob: Job? = null
-    private var hasLastPosition = false
-    private var lastLatitude = 0.0
-    private var lastLongitude = 0.0
+
+    private var hasAnchor = false
+    private var anchorLat = 0.0
+    private var anchorLon = 0.0
+
+    private var hasPrev = false
+    private var prevLat = 0.0
+    private var prevLon = 0.0
+    private var prevTime = 0L
+    private var lastHeading: Float? = null
+
     private var lastSavedName: String? = null
+    private val notifiedPois = mutableSetOf<String>()
+
+    init {
+        Notifier.ensureChannel(application)
+    }
 
     fun startTracking() {
         if (trackingJob != null) return
@@ -52,7 +73,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshManual() {
-        if (hasLastPosition) refresh(lastLatitude, lastLongitude)
+        if (hasAnchor) refresh(anchorLat, anchorLon)
+        else if (_state.value.curLat != null) refresh(_state.value.curLat!!, _state.value.curLon!!)
     }
 
     fun clearHistory() {
@@ -60,19 +82,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun onLocation(location: Location) {
-        if (hasLastPosition && !_state.value.isFirstLoading) {
-            val results = FloatArray(1)
-            Location.distanceBetween(
-                lastLatitude, lastLongitude,
-                location.latitude, location.longitude,
-                results
-            )
-            if (results[0] < 1200f) return
+        val now = System.currentTimeMillis()
+        var speedMs = if (location.hasSpeed()) location.speed else 0f
+        var heading: Float? = if (location.hasBearing()) location.bearing else lastHeading
+
+        if (hasPrev) {
+            val res = FloatArray(3)
+            Location.distanceBetween(prevLat, prevLon, location.latitude, location.longitude, res)
+            val dt = (now - prevTime) / 1000f
+            if (dt > 0f && res[0] > 5f) {
+                if (!location.hasSpeed()) speedMs = res[0] / dt
+                if (!location.hasBearing()) heading = res[1]
+            }
         }
-        hasLastPosition = true
-        lastLatitude = location.latitude
-        lastLongitude = location.longitude
+        prevLat = location.latitude
+        prevLon = location.longitude
+        prevTime = now
+        hasPrev = true
+        if (heading != null) lastHeading = heading
+
+        val motion = motionFrom(speedMs)
+        _state.update {
+            it.copy(
+                curLat = location.latitude,
+                curLon = location.longitude,
+                headingDeg = heading,
+                speedKmh = speedMs * 3.6f,
+                motion = motion
+            )
+        }
+
+        maybeNotifyApproaching(location.latitude, location.longitude, heading, motion)
+
+        if (hasAnchor && !_state.value.isFirstLoading) {
+            val res = FloatArray(1)
+            Location.distanceBetween(anchorLat, anchorLon, location.latitude, location.longitude, res)
+            if (res[0] < 1200f) return
+        }
+        hasAnchor = true
+        anchorLat = location.latitude
+        anchorLon = location.longitude
         refresh(location.latitude, location.longitude)
+    }
+
+    private fun maybeNotifyApproaching(lat: Double, lon: Double, heading: Float?, motion: MotionState) {
+        if (heading == null || motion == MotionState.STILL) return
+        if (!Notifier.canNotify(getApplication())) return
+        val pois = _state.value.pois
+        if (pois.isEmpty()) return
+        val best = pois
+            .map { poi ->
+                val delta = angleDelta(heading, bearingBetween(lat, lon, poi.latitude, poi.longitude))
+                Triple(poi, delta, distanceMeters(lat, lon, poi.latitude, poi.longitude))
+            }
+            .filter { abs(it.second) < 50f && it.third in 150f..2200f }
+            .minByOrNull { it.third } ?: return
+
+        val poi = best.first
+        if (poi.title in notifiedPois) return
+        notifiedPois.add(poi.title)
+        val side = sideLabel(best.second).replaceFirstChar { it.uppercase() }
+        Notifier.approaching(
+            getApplication(),
+            poi.title.hashCode(),
+            poi.title,
+            "$side \u00B7 tra ${formatDistance(best.third.toInt())}"
+        )
     }
 
     private fun refresh(latitude: Double, longitude: Double) {
@@ -140,6 +215,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     if (name != "Luogo sconosciuto" && name != lastSavedName) {
                         lastSavedName = name
+                        notifiedPois.clear()
                         database.visitedDao().insert(
                             VisitedPlace(
                                 name = name,
@@ -150,6 +226,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 timestamp = System.currentTimeMillis()
                             )
                         )
+                        val short = place.description?.substringBefore(". ")?.take(150)
+                            ?: address?.region ?: ""
+                        Notifier.crossing(context, name, short)
                     }
                 }
             } catch (e: CancellationException) {

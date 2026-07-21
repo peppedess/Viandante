@@ -19,9 +19,9 @@ class LocationClient(context: Context) {
 
     @SuppressLint("MissingPermission")
     fun updates(): Flow<Location> = callbackFlow {
-        val request = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
-            .setMinUpdateDistanceMeters(400f)
-            .setMinUpdateIntervalMillis(15_000L)
+        val request = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 5_000L)
+            .setMinUpdateIntervalMillis(2_000L)
+            .setMinUpdateDistanceMeters(20f)
             .build()
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
